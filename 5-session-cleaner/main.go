@@ -20,17 +20,23 @@ package main
 import (
 	"errors"
 	"log"
+	"sync"
+	"time"
 )
+
+const EXPIRATION_SECONDS = 5
 
 // SessionManager keeps track of all sessions from creation, updating
 // to destroying.
 type SessionManager struct {
+	l        sync.Mutex
 	sessions map[string]Session
 }
 
 // Session stores the session's data
 type Session struct {
-	Data map[string]interface{}
+	Data    map[string]interface{}
+	Expires time.Time
 }
 
 // NewSessionManager creates a new sessionManager
@@ -38,6 +44,8 @@ func NewSessionManager() *SessionManager {
 	m := &SessionManager{
 		sessions: make(map[string]Session),
 	}
+
+	go m.ExpireSessions()
 
 	return m
 }
@@ -49,11 +57,19 @@ func (m *SessionManager) CreateSession() (string, error) {
 		return "", err
 	}
 
+	m.l.Lock()
+	defer m.l.Unlock()
+
 	m.sessions[sessionID] = Session{
-		Data: make(map[string]interface{}),
+		Data:    make(map[string]interface{}),
+		Expires: getExpiration(),
 	}
 
 	return sessionID, nil
+}
+
+func getExpiration() time.Time {
+	return time.Now().Add(time.Second * EXPIRATION_SECONDS)
 }
 
 // ErrSessionNotFound returned when sessionID not listed in
@@ -63,6 +79,9 @@ var ErrSessionNotFound = errors.New("SessionID does not exists")
 // GetSessionData returns data related to session if sessionID is
 // found, errors otherwise
 func (m *SessionManager) GetSessionData(sessionID string) (map[string]interface{}, error) {
+	m.l.Lock()
+	defer m.l.Unlock()
+
 	session, ok := m.sessions[sessionID]
 	if !ok {
 		return nil, ErrSessionNotFound
@@ -77,17 +96,35 @@ func (m *SessionManager) UpdateSessionData(sessionID string, data map[string]int
 		return ErrSessionNotFound
 	}
 
-	// Hint: you should renew expiry of the session here
+	m.l.Lock()
+	defer m.l.Unlock()
+
 	m.sessions[sessionID] = Session{
-		Data: data,
+		Data:    data,
+		Expires: getExpiration(),
 	}
 
 	return nil
 }
 
+func (m *SessionManager) ExpireSessions() {
+	tick := time.Tick(time.Second)
+	for {
+		<-tick
+		m.l.Lock()
+		for id, session := range m.sessions {
+			if time.Now().After(session.Expires) {
+				delete(m.sessions, id)
+			}
+		}
+		m.l.Unlock()
+	}
+}
+
 func main() {
 	// Create new sessionManager and new session
 	m := NewSessionManager()
+
 	sID, err := m.CreateSession()
 	if err != nil {
 		log.Fatal(err)
