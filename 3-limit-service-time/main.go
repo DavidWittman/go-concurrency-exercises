@@ -26,14 +26,14 @@ type User struct {
 	TimeUsed  int64 // in seconds
 }
 
-func (u *User) AddTime(seconds int64) {
-	atomic.AddInt64(&u.TimeUsed, seconds)
+func (u *User) AddTime(seconds int64) int64 {
+	return atomic.AddInt64(&u.TimeUsed, seconds)
 }
 
 // HandleRequest runs the processes requested by users. Returns false
 // if process had to be killed
 func HandleRequest(process func(), u *User) bool {
-	done := make(chan int64)
+	done := make(chan bool)
 
 	// Skip all the throttling nonsense if they're premium
 	if u.IsPremium {
@@ -42,33 +42,28 @@ func HandleRequest(process func(), u *User) bool {
 	}
 
 	// Short circuit if they're already out of time
-	if u.TimeUsed >= MAX_SECONDS {
+	if atomic.LoadInt64(&u.TimeUsed) >= MAX_SECONDS {
 		return false
 	}
 
 	// Start processing in a goroutine
 	go func() {
-		start := time.Now()
 		process()
-		done <- int64(time.Since(start).Seconds())
+		done <- true
 	}()
 
-	for i := int64(0); u.TimeUsed < MAX_SECONDS; i++ {
-		timeLeft := MAX_SECONDS - u.TimeUsed
+	tick := time.Tick(time.Second)
+
+	for {
 		select {
-		case <-time.After(time.Second):
-			u.AddTime(1)
-		case elapsed := <-done:
-			u.AddTime(elapsed - i)
+		case <-done:
 			return true
-		case <-time.After(time.Second * time.Duration(timeLeft)):
-			u.AddTime(timeLeft)
-			break
+		case <-tick:
+			if i := u.AddTime(1); i >= MAX_SECONDS {
+				return false
+			}
 		}
 	}
-
-	// MAX_SECONDS has been reached
-	return false
 }
 
 func main() {
